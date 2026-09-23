@@ -1,8 +1,8 @@
 # Road Accident & Collision Management System
-## DBMS TAE-2 (Phase II Live Project Implementation)
+## DBMS 
 **Course Code:** 23UDSPCL3508 / 23UDSPCP3508 — Database Management Systems  
 **Academic Year:** 2026–2027 | **Evaluation:** TAE 2 (Winter 2026)  
-**Student Name:** Prerna Agrawal | **Roll Number:** P39 | **PRN:** 24ACDS1101026 | **Section:** P  
+**Student Name:** Prerna Agrawal | **Roll Number:** P39 | **Registration No:** 24ACDS1101026 | **Section:** P  
 **Department:** Computer Science & Engineering (Data Science)  
 **Institute:** G H Raisoni College of Engineering and Management, Pune  
 **Target RDBMS:** MySQL 8.0 (InnoDB Engine)  
@@ -13,7 +13,7 @@
 ## 📌 Project Overview
 The **Road Accident & Collision Management System** is a normalized relational database designed to store, manage, and analyze road accident records, spatial accident locations, vehicle types involved, primary contributing factors, and casualty statistics. 
 
-Built as a direct continuation (Phase II) of TAE-1, this project translates an approved 3NF/BCNF relational model into an executable database schema, populates it with real-world collision data, and implements advanced SQL features including multi-table joins, correlated subqueries, transactional stored procedures, dynamic triggers, virtual views, and B-Tree index optimization.
+This project translates an approved 3NF/BCNF relational model into an executable database schema, populates it with real-world collision data, and implements advanced SQL features including multi-table joins, correlated subqueries, transactional stored procedures, dynamic triggers, virtual views, and B-Tree index optimization.
 
 ---
 
@@ -108,6 +108,6 @@ SOURCE queries.sql;
 ---
 
 ## 🤝 Authors & Acknowledgments
-- **Student:** Prerna Agrawal (Roll P39, PRN: 24ACDS1101026)
+- **Student:** Prerna Agrawal (Roll P39)
 - **Guided By:** Mr. Chinmay Mukim Sir
 - **Department:** CSE (Data Science), GHRCEM, Pune
