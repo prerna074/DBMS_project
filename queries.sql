@@ -1,0 +1,306 @@
+USE road_accident_db;
+
+-- JOINS
+
+-- Multi-Table Inner Join (Connecting 9 Entities matching ER Diagram)
+-- Retrieves comprehensive collision dossier: Collision info, Borough, Street details,
+-- Vehicle involved, Contributing Factor, and Casualty numbers.
+SELECT 
+    c.COLLISION_ID,
+    c.ACCIDENT_DATE,
+    c.ACCIDENT_TIME,
+    b.BOROUGH,
+    z.ZIP_CODE,
+    l.ON_STREET_NAME,
+    l.CROSS_STREET_NAME,
+    cv.VEHICLE_TYPE_CODE,
+    cf.CONTRIBUTING_FACTOR_VEHICLE,
+    cas.NUMBER_OF_PERSONS_INJURED,
+    cas.NUMBER_OF_PERSONS_KILLED
+FROM COLLISION c
+INNER JOIN LOCATION l ON c.LATITUDE = l.LATITUDE AND c.LONGITUDE = l.LONGITUDE
+INNER JOIN ZIP_CODE z ON l.ZIP_CODE = z.ZIP_CODE
+INNER JOIN BOROUGH b ON z.BOROUGH = b.BOROUGH
+INNER JOIN COLLISION_VEHICLE cv ON c.COLLISION_ID = cv.COLLISION_ID
+INNER JOIN VEHICLE_TYPE vt ON cv.VEHICLE_TYPE_CODE = vt.VEHICLE_TYPE_CODE
+INNER JOIN COLLISION_FACTOR cf ON c.COLLISION_ID = cf.COLLISION_ID
+INNER JOIN CONTRIBUTING_FACTOR f ON cf.CONTRIBUTING_FACTOR_VEHICLE = f.CONTRIBUTING_FACTOR_VEHICLE
+INNER JOIN CASUALTY cas ON c.COLLISION_ID = cas.COLLISION_ID
+WHERE cas.NUMBER_OF_PERSONS_INJURED > 0 OR cas.NUMBER_OF_PERSONS_KILLED > 0
+ORDER BY c.ACCIDENT_DATE DESC, cas.NUMBER_OF_PERSONS_INJURED DESC
+LIMIT 20;
+
+-- Left Outer Join
+-- Identifies collisions that have NO recorded contributing factors in the database.
+SELECT 
+    c.COLLISION_ID,
+    c.ACCIDENT_DATE,
+    c.ACCIDENT_TIME,
+    l.ON_STREET_NAME,
+    z.BOROUGH,
+    cf.CONTRIBUTING_FACTOR_VEHICLE
+FROM COLLISION c
+INNER JOIN LOCATION l ON c.LATITUDE = l.LATITUDE AND c.LONGITUDE = l.LONGITUDE
+INNER JOIN ZIP_CODE z ON l.ZIP_CODE = z.ZIP_CODE
+LEFT JOIN COLLISION_FACTOR cf ON c.COLLISION_ID = cf.COLLISION_ID
+WHERE cf.CONTRIBUTING_FACTOR_VEHICLE IS NULL;
+
+-- Right Outer Join
+-- Identifies defined vehicle types that have never been involved in any recorded collision.
+SELECT 
+    vt.VEHICLE_TYPE_CODE,
+    cv.COLLISION_ID
+FROM COLLISION_VEHICLE cv
+RIGHT JOIN VEHICLE_TYPE vt ON cv.VEHICLE_TYPE_CODE = vt.VEHICLE_TYPE_CODE
+WHERE cv.COLLISION_ID IS NULL;
+
+-- Self Join
+-- Identifies repeat accident spots: Pairs of distinct collisions that occurred at the 
+-- exact same geographical location (LATITUDE, LONGITUDE).
+SELECT 
+    c1.COLLISION_ID AS Primary_Collision_ID,
+    c1.ACCIDENT_DATE AS Primary_Date,
+    c2.COLLISION_ID AS Recurring_Collision_ID,
+    c2.ACCIDENT_DATE AS Recurring_Date,
+    c1.LATITUDE,
+    c1.LONGITUDE
+FROM COLLISION c1
+INNER JOIN COLLISION c2 
+    ON c1.LATITUDE = c2.LATITUDE 
+   AND c1.LONGITUDE = c2.LONGITUDE 
+   AND c1.COLLISION_ID < c2.COLLISION_ID
+ORDER BY c1.LATITUDE, c1.LONGITUDE;
+
+
+
+-- CORRELATED SUBQUERIES & AGGREGATE FUNCTIONS WITH GROUP BY / HAVING
+
+-- Correlated Subquery
+-- Finds collisions where the number of injured persons is strictly GREATER than 
+-- the average injured count for collisions occurring in that specific Borough.
+SELECT 
+    c.COLLISION_ID,
+    c.ACCIDENT_DATE,
+    z.BOROUGH,
+    cas.NUMBER_OF_PERSONS_INJURED
+FROM COLLISION c
+INNER JOIN LOCATION l ON c.LATITUDE = l.LATITUDE AND c.LONGITUDE = l.LONGITUDE
+INNER JOIN ZIP_CODE z ON l.ZIP_CODE = z.ZIP_CODE
+INNER JOIN CASUALTY cas ON c.COLLISION_ID = cas.COLLISION_ID
+WHERE cas.NUMBER_OF_PERSONS_INJURED > (
+    SELECT AVG(cas_sub.NUMBER_OF_PERSONS_INJURED)
+    FROM COLLISION c_sub
+    INNER JOIN LOCATION l_sub ON c_sub.LATITUDE = l_sub.LATITUDE AND c_sub.LONGITUDE = l_sub.LONGITUDE
+    INNER JOIN ZIP_CODE z_sub ON l_sub.ZIP_CODE = z_sub.ZIP_CODE
+    INNER JOIN CASUALTY cas_sub ON c_sub.COLLISION_ID = cas_sub.COLLISION_ID
+    WHERE z_sub.BOROUGH = z.BOROUGH
+);
+
+-- Aggregate Query with GROUP BY and HAVING
+-- Identifies high-risk Zip Codes having more than 3 total collisions AND 
+-- at least 3 aggregate injuries, ranked by severity.
+SELECT 
+    z.ZIP_CODE,
+    z.BOROUGH,
+    COUNT(c.COLLISION_ID) AS Total_Collisions,
+    SUM(cas.NUMBER_OF_PERSONS_INJURED) AS Aggregate_Injuries,
+    SUM(cas.NUMBER_OF_PERSONS_KILLED) AS Aggregate_Fatalities
+FROM ZIP_CODE z
+INNER JOIN LOCATION l ON z.ZIP_CODE = l.ZIP_CODE
+INNER JOIN COLLISION c ON l.LATITUDE = c.LATITUDE AND l.LONGITUDE = c.LONGITUDE
+INNER JOIN CASUALTY cas ON c.COLLISION_ID = cas.COLLISION_ID
+GROUP BY z.ZIP_CODE, z.BOROUGH
+HAVING COUNT(c.COLLISION_ID) >= 3 AND SUM(cas.NUMBER_OF_PERSONS_INJURED) >= 3
+ORDER BY Aggregate_Injuries DESC, Aggregate_Fatalities DESC;
+
+-- STORED PROCEDURE WITH PARAMETERS & TRANSACTIONAL MANAGEMENT
+
+DELIMITER //
+DROP PROCEDURE IF EXISTS sp_RegisterNewCollision //
+CREATE PROCEDURE sp_RegisterNewCollision(
+    IN p_collision_id INT,
+    IN p_accident_date DATE,
+    IN p_accident_time TIME,
+    IN p_latitude DECIMAL(10,7),
+    IN p_longitude DECIMAL(10,7),
+    IN p_vehicle_type VARCHAR(20),
+    IN p_contributing_factor VARCHAR(150),
+    IN p_injured INT,
+    IN p_killed INT,
+    IN p_ped_injured INT,
+    IN p_ped_killed INT,
+    IN p_cyc_injured INT,
+    IN p_cyc_killed INT,
+    IN p_mot_injured INT,
+    IN p_mot_killed INT
+)
+BEGIN
+    -- Declare SQL Exception Handler for Transaction Rollback
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    -- Step 1: Insert Location if it does not already exist
+    IF NOT EXISTS (SELECT 1 FROM LOCATION WHERE LATITUDE = p_latitude AND LONGITUDE = p_longitude) THEN
+        INSERT INTO LOCATION (LATITUDE, LONGITUDE, ON_STREET_NAME, CROSS_STREET_NAME, OFF_STREET_NAME, ZIP_CODE)
+        VALUES (p_latitude, p_longitude, 'NEWLY REGISTERED STREET', 'INTERSECTION', NULL, '10001');
+    END IF;
+   -- Step 2: Insert into COLLISION table
+    INSERT INTO COLLISION (COLLISION_ID, ACCIDENT_DATE, ACCIDENT_TIME, LATITUDE, LONGITUDE)
+    VALUES (p_collision_id, p_accident_date, p_accident_time, p_latitude, p_longitude);
+
+    -- Step 3: Link Vehicle Type in COLLISION_VEHICLE
+    INSERT INTO COLLISION_VEHICLE (COLLISION_ID, VEHICLE_TYPE_CODE)
+    VALUES (p_collision_id, p_vehicle_type);
+
+    -- Step 4: Link Contributing Factor in COLLISION_FACTOR
+    IF p_contributing_factor IS NOT NULL THEN
+        INSERT INTO COLLISION_FACTOR (COLLISION_ID, CONTRIBUTING_FACTOR_VEHICLE)
+        VALUES (p_collision_id, p_contributing_factor);
+    END IF;
+
+    -- Step 5: Insert Casualty Summary Record
+    INSERT INTO CASUALTY (
+        COLLISION_ID, NUMBER_OF_PERSONS_INJURED, NUMBER_OF_PERSONS_KILLED,
+        NUMBER_OF_PEDESTRIANS_INJURED, NUMBER_OF_PEDESTRIANS_KILLED,
+        NUMBER_OF_CYCLIST_INJURED, NUMBER_OF_CYCLIST_KILLED,
+        NUMBER_OF_MOTORIST_INJURED, NUMBER_OF_MOTORIST_KILLED
+    ) VALUES (
+        p_collision_id, p_injured, p_killed,
+        p_ped_injured, p_ped_killed,
+        p_cyc_injured, p_cyc_killed,
+        p_mot_injured, p_mot_killed
+    );
+
+    COMMIT;
+END //
+
+DELIMITER ;
+
+vw_boroughaccidentsummary
+-- TRIGGERS (AUTOMATED BUSINESS RULES & DYNAMIC AUDITING)
+
+
+DELIMITER //
+
+-- Trigger: Validate Casualty Counts before Insertion
+DROP TRIGGER IF EXISTS trg_ValidateCasualtyCounts //
+
+CREATE TRIGGER trg_ValidateCasualtyCounts
+BEFORE INSERT ON CASUALTY
+FOR EACH ROW
+BEGIN
+    -- Business Rule: Pedestrian + Cyclist + Motorist sub-counts must not exceed total count
+    IF (NEW.NUMBER_OF_PEDESTRIANS_INJURED + NEW.NUMBER_OF_CYCLIST_INJURED + NEW.NUMBER_OF_MOTORIST_INJURED) > NEW.NUMBER_OF_PERSONS_INJURED THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Business Rule Violation: Sum of sub-injured counts exceeds total injured count.';
+    END IF;
+
+    IF (NEW.NUMBER_OF_PEDESTRIANS_KILLED + NEW.NUMBER_OF_CYCLIST_KILLED + NEW.NUMBER_OF_MOTORIST_KILLED) > NEW.NUMBER_OF_PERSONS_KILLED THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Business Rule Violation: Sum of sub-killed counts exceeds total killed count.';
+    END IF;
+END //
+
+-- 4.2 Trigger: Dynamic Audit Logging on Collision Updates
+DROP TRIGGER IF EXISTS trg_AuditCollisionChanges //
+
+CREATE TRIGGER trg_AuditCollisionChanges
+AFTER UPDATE ON COLLISION
+FOR EACH ROW
+BEGIN
+    IF OLD.ACCIDENT_DATE <> NEW.ACCIDENT_DATE THEN
+        INSERT INTO COLLISION_AUDIT (COLLISION_ID, ACTION_TYPE, OLD_ACCIDENT_DATE, NEW_ACCIDENT_DATE, PERFORMED_BY)
+        VALUES (NEW.COLLISION_ID, 'UPDATE_DATE', OLD.ACCIDENT_DATE, NEW.ACCIDENT_DATE, CURRENT_USER());
+    END IF;
+END //
+
+DELIMITER ;
+
+-- VIRTUAL VIEWS FOR BUSINESS REPORTING
+
+
+-- View: Borough Accident Summary Report
+CREATE OR REPLACE VIEW vw_BoroughAccidentSummary AS
+SELECT 
+    b.BOROUGH,
+    COUNT(DISTINCT c.COLLISION_ID) AS Total_Collisions,
+    COALESCE(SUM(cas.NUMBER_OF_PERSONS_INJURED), 0) AS Total_Injured,
+    COALESCE(SUM(cas.NUMBER_OF_PERSONS_KILLED), 0) AS Total_Fatalities,
+    COALESCE(SUM(cas.NUMBER_OF_PEDESTRIANS_INJURED), 0) AS Pedestrians_Injured,
+    COALESCE(SUM(cas.NUMBER_OF_CYCLIST_INJURED), 0) AS Cyclists_Injured,
+    COALESCE(SUM(cas.NUMBER_OF_MOTORIST_INJURED), 0) AS Motorists_Injured
+FROM BOROUGH b
+LEFT JOIN ZIP_CODE z ON b.BOROUGH = z.BOROUGH
+LEFT JOIN LOCATION l ON z.ZIP_CODE = l.ZIP_CODE
+LEFT JOIN COLLISION c ON l.LATITUDE = c.LATITUDE AND l.LONGITUDE = c.LONGITUDE
+LEFT JOIN CASUALTY cas ON c.COLLISION_ID = cas.COLLISION_ID
+GROUP BY b.BOROUGH;
+
+-- 5.2 View: High-Risk Contributing Factor Analysis Report
+CREATE OR REPLACE VIEW vw_HighRiskFactorAnalysis AS
+SELECT 
+    cf.CONTRIBUTING_FACTOR_VEHICLE,
+    cv.VEHICLE_TYPE_CODE,
+    COUNT(DISTINCT c.COLLISION_ID) AS Incident_Count,
+    SUM(cas.NUMBER_OF_PERSONS_INJURED) AS Total_Injuries,
+    SUM(cas.NUMBER_OF_PERSONS_KILLED) AS Total_Fatalities
+FROM CONTRIBUTING_FACTOR cf
+INNER JOIN COLLISION_FACTOR cfact ON cf.CONTRIBUTING_FACTOR_VEHICLE = cfact.CONTRIBUTING_FACTOR_VEHICLE
+INNER JOIN COLLISION c ON cfact.COLLISION_ID = c.COLLISION_ID
+INNER JOIN COLLISION_VEHICLE cv ON c.COLLISION_ID = cv.COLLISION_ID
+INNER JOIN CASUALTY cas ON c.COLLISION_ID = cas.COLLISION_ID
+GROUP BY cf.CONTRIBUTING_FACTOR_VEHICLE, cv.VEHICLE_TYPE_CODE
+HAVING COUNT(DISTINCT c.COLLISION_ID) >= 2;
+
+
+-- SECTION 6: PERFORMANCE TUNING & INDEXING BENCHMARKS (EXPLAIN ANALYZE)
+
+-- Query searching collisions by date range and location zip code
+-- BEFORE INDEXING EXPLAIN Execution Plan
+EXPLAIN ANALYZE
+SELECT c.COLLISION_ID, c.ACCIDENT_DATE, l.ON_STREET_NAME, z.ZIP_CODE, z.BOROUGH
+FROM COLLISION c
+JOIN LOCATION l ON c.LATITUDE = l.LATITUDE AND c.LONGITUDE = l.LONGITUDE
+JOIN ZIP_CODE z ON l.ZIP_CODE = z.ZIP_CODE
+WHERE c.ACCIDENT_DATE BETWEEN '2025-01-01' AND '2025-06-30'
+  AND z.ZIP_CODE = '10001';
+
+-- Create Composite Index to optimize Date and Location join lookups
+CREATE INDEX idx_collision_date ON COLLISION (ACCIDENT_DATE);
+CREATE INDEX idx_location_zip ON LOCATION (ZIP_CODE);
+
+-- AFTER INDEXING EXPLAIN Execution Plan (Demonstrating key lookup optimization)
+EXPLAIN ANALYZE
+SELECT c.COLLISION_ID, c.ACCIDENT_DATE, l.ON_STREET_NAME, z.ZIP_CODE, z.BOROUGH
+FROM COLLISION c
+JOIN LOCATION l ON c.LATITUDE = l.LATITUDE AND c.LONGITUDE = l.LONGITUDE
+JOIN ZIP_CODE z ON l.ZIP_CODE = z.ZIP_CODE
+WHERE c.ACCIDENT_DATE BETWEEN '2025-01-01' AND '2025-06-30'
+  AND z.ZIP_CODE = '10001';
+
+-- Benchmark 2: Query filtering high casualty collisions
+-- BEFORE INDEXING EXPLAIN
+EXPLAIN ANALYZE
+SELECT COLLISION_ID, NUMBER_OF_PERSONS_INJURED, NUMBER_OF_PERSONS_KILLED
+FROM CASUALTY
+WHERE NUMBER_OF_PERSONS_INJURED >= 2;
+
+-- Create Single-Column Index on CASUALTY injured count
+CREATE INDEX idx_casualty_injured ON CASUALTY (NUMBER_OF_PERSONS_INJURED);
+
+-- AFTER INDEXING EXPLAIN
+
+SELECT COLLISION_ID, NUMBER_OF_PERSONS_INJURED, NUMBER_OF_PERSONS_KILLED
+FROM CASUALTY
+WHERE NUMBER_OF_PERSONS_INJURED >= 2;
+
+-- 1. Switch to your database
+USE road_accident_db;
+
+-- 2. See all 9 normalized tables + audit table
+SHOW TABLES;
